@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1
+
+FROM scratch
+ARG CLC_MIRROR=https://mirror.calculate-linux.org
+ARG CLC_IMAGE=container/scratch-20260908-x86_64
+
+ADD --unpack=true --chown=0:0 ${CLC_MIRROR}/${CLC_IMAGE}/rootfs.tar.xz /
+
+ENV LANG=C.UTF-8 \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CMD ["/bin/bash"]
