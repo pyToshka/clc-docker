@@ -22,6 +22,7 @@ CONF
 echo "*/*::${CALCULATE_OVERLAY} **" > /etc/portage/package.accept_keywords/calculate
 echo "=sys-apps/calculate-utils-9999" > /etc/portage/package.mask/calculate
 echo "sys-apps/calculate-utils -install -pxe -desktop -client" > /etc/portage/package.use/calculate
+echo "dev-lang/rust-bin CPU_FLAGS_X86: sse2" > /etc/portage/package.use/rust-bin
 EOF
 
 RUN --mount=type=cache,target=/var/cache/distfiles,sharing=locked <<EOF

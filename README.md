@@ -8,7 +8,7 @@ Three Dockerfiles, three ways to get there:
 |----------------------|-----------------|-----------------|-----------------------------------------------------------|
 | `Dockerfile`         | `scratch`       | x86_64          | official CLC rootfs from the mirror, fetched via Alpine   |
 | `Dockerfile.scratch` | `scratch`       | x86_64          | same rootfs, fetched with `ADD --unpack`, no helper image |
-| `Dockerfile.stage3`  | `gentoo/stage3` | arm64 or x86_64 | Gentoo plus Calculate overlay and `calculate-utils`       |
+| `Dockerfile.stage3`  | `gentoo/stage3` | 8 platforms     | Gentoo plus Calculate overlay and `calculate-utils`       |
 
 The first two take the same rootfs that `lxc-create -t download --server mirror.calculate-linux.org` uses and pack it into a regular Docker image. The third one is not an official Calculate build, it is Gentoo with Calculate tooling built from source, because Calculate ships no arm64 rootfs and no arm64 binhost.
 
@@ -71,6 +71,16 @@ A few Portage tweaks are needed to make `calculate-utils` build outside of x86_6
 - `calculate-utils` supports only Python 3.12 and 3.13, while the stage3 profile may already default to a newer interpreter. `PYTHON_TARGET` is added next to the profile target instead of replacing it, otherwise Portage ends up with slot conflicts on `dev-python/*`.
 - The live ebuild `calculate-utils-9999` is masked so releases get picked, since `**` keywords would otherwise make the live version the newest.
 - USE flags `install`, `pxe`, `desktop`, `client` are disabled: they pull the installer and bootloader stack (`syslinux` and friends) which is x86-only and useless in a container.
+- `dev-lang/rust-bin` gets `CPU_FLAGS_X86: sse2`. The 32-bit x86 profile (`x86/23.0/i686`) does not enable SSE2, `rust-bin` refuses to install without it (`REQUIRED_USE="x86? ( cpu_flags_x86_sse2 )"`), and Rust cannot be avoided: `dev-vcs/git` asks for it through USE `rust`, `dev-python/cryptography` builds Rust code. On other platforms the entry is inert, the dependency plan for amd64 and arm64 is identical with and without it.
+
+The image builds for eight of the nine platforms `gentoo/stage3` publishes: `linux/amd64`, `linux/arm64`, `linux/386`, `linux/arm/v6`, `linux/arm/v7`, `linux/ppc64le`, `linux/riscv64`, `linux/s390x`. The ninth, `linux/arm/v5`, is out of reach: its profile pulls in `features/wd40`, whose `package.mask` covers packages requiring Rust, and `calculate-utils` depends on `dev-python/pyopenssl`, which sits on that list. No Portage setting in this Dockerfile can fix that without dropping a real dependency of `calculate-utils`.
+
+s390x needs its own base tag. Inside the `gentoo/stage3:latest` manifest list the s390x image was built on 2022-12-05, every other platform on 2026-09-07 (checked on 2026-09-11), and on that old image Portage stops with slot conflicts on perl 5.34 and libxml2 next to an installed glibc 2.35 that the tree now masks. The per-architecture tag `s390x-openrc` is current:
+
+```bash
+docker build --platform linux/s390x -f Dockerfile.stage3 \
+  -t calculate/clc:s390x --build-arg STAGE3_TAG=s390x-openrc .
+```
 
 arm64, for example on Apple Silicon:
 
@@ -98,6 +108,22 @@ Build arguments:
 | `PYTHON_TARGET`     | `python3_13` | extra Python target required by `calculate-utils`   |
 
 In this image `cl-update` has no binhost to pull from, so it behaves as a wrapper around `emerge` and updates from source.
+
+## Images built by CI
+
+`.github/workflows/docker-publish.yml` runs on every push to `main`, on `v*.*.*` tags, nightly at 01:39 UTC and on pull requests. Pull requests only build, nothing is pushed. Everything lands in `ghcr.io/pytoshka/clc-docker` under the tags `docker/metadata-action` derives from the event (`main`, `nightly`, the git tag), with a suffix per image; the table uses `main` as the example:
+
+| Tag               | Dockerfile          | Platforms                  | Published when                  |
+|-------------------|---------------------|----------------------------|---------------------------------|
+| `main`            | `Dockerfile`        | x86_64                     | the build succeeds              |
+| `main-stage3`     | `Dockerfile.stage3` | amd64, arm64               | both native builds succeed      |
+| `main-stage3-all` | `Dockerfile.stage3` | all eight platforms above  | all eight builds succeed        |
+
+amd64 and arm64 are the primary targets, so their tag never waits for the rest. `stage3-build` builds them natively, amd64 on `ubuntu-24.04` and arm64 on `ubuntu-24.04-arm`, and `stage3-merge` publishes `-stage3` as soon as both are done, usually hours before the emulated builds finish. The other six platforms build in `stage3-build-extra`: 386 natively on `ubuntu-24.04`, the remaining five on `ubuntu-24.04` under QEMU. `stage3-merge-all` then combines the same amd64 and arm64 images with those six into `-stage3-all`.
+
+A build job pushes its image by digest only, without a tag. The merge jobs assemble the manifest list, tag it and sign it with cosign, the same way the x86_64 image is signed. Each merge job picks digests by an explicit platform list and stops if one of them is missing, so a tag never changes its set of platforms from one run to the next: a list with a platform missing is not published at all. Layer cache goes to the GitHub Actions cache with a separate scope per platform, otherwise the jobs would overwrite each other's cache.
+
+The weak spot is `-stage3-all`. A job on a GitHub-hosted runner is cut off after 6 hours, and under QEMU the whole dependency tree compiles from source: 63 to 89 packages depending on the platform, the heaviest being `dev-lang/python` and two Rust builds, `dev-python/cryptography` and `dev-util/maturin`. Whether the emulated jobs fit into that limit is settled by the first CI run, not by this README. If one of them does not, the run turns red and `-stage3-all` keeps its previous version, while `-stage3` is published regardless.
 
 ## Run
 

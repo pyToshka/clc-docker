@@ -5,7 +5,6 @@ on:
     - cron: '39 1 * * *'
   push:
     branches: [ "main" ]
-    # Publish semver tags as releases.
     tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ "main" ]
@@ -66,3 +65,213 @@ jobs:
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
+  stage3-build:
+    name: stage3 (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+    steps: &stage3-build-steps
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "${GITHUB_ENV}"
+          echo "STAGE3_IMAGE=${REGISTRY}/${IMAGE_NAME,,}" >> "${GITHUB_ENV}"
+
+      - name: Set up QEMU
+        if: ${{ matrix.qemu }}
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        with:
+          platforms: ${{ matrix.qemu }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.STAGE3_IMAGE }}
+          flavor: |
+            suffix=-stage3
+            onlatest=true
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.stage3
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            STAGE3_TAG=${{ matrix.stage3-tag || 'latest' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.STAGE3_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=stage3-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,scope=stage3-${{ env.PLATFORM_PAIR }},mode=max,ignore-error=true
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          test -n "${DIGEST}"
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-stage3-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  stage3-build-extra:
+    name: stage3 (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/386
+            runner: ubuntu-24.04
+          - platform: linux/arm/v6
+            runner: ubuntu-24.04
+            qemu: arm
+          - platform: linux/arm/v7
+            runner: ubuntu-24.04
+            qemu: arm
+          - platform: linux/ppc64le
+            runner: ubuntu-24.04
+            qemu: ppc64le
+          - platform: linux/riscv64
+            runner: ubuntu-24.04
+            qemu: riscv64
+          - platform: linux/s390x
+            runner: ubuntu-24.04
+            qemu: s390x
+            stage3-tag: s390x-openrc
+
+    steps: *stage3-build-steps
+
+  stage3-merge:
+    if: github.event_name != 'pull_request'
+    needs: stage3-build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      STAGE3_PLATFORMS: linux/amd64 linux/arm64
+      STAGE3_SUFFIX: -stage3
+
+    steps: &stage3-merge-steps
+      - name: Prepare
+        run: echo "STAGE3_IMAGE=${REGISTRY}/${IMAGE_NAME,,}" >> "${GITHUB_ENV}"
+
+      - name: Download digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-stage3-*
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 # v3.5.0
+        with:
+          cosign-release: 'v2.2.4'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.STAGE3_IMAGE }}
+          flavor: |
+            suffix=${{ env.STAGE3_SUFFIX }}
+            onlatest=true
+
+      - name: Create manifest list and push
+        id: manifest
+        env:
+          META_JSON: ${{ steps.meta.outputs.json }}
+        run: |
+          read -ra platforms <<< "${STAGE3_PLATFORMS}"
+          sources=()
+          for platform in "${platforms[@]}"; do
+            digests=("${RUNNER_TEMP}/digests/digests-stage3-${platform//\//-}"/*)
+            if [ "${#digests[@]}" -ne 1 ] || [ ! -f "${digests[0]}" ]; then
+              echo "expected exactly one digest for ${platform}" >&2
+              exit 1
+            fi
+            sources+=("${STAGE3_IMAGE}@sha256:${digests[0]##*/}")
+          done
+          mapfile -t tags < <(jq -r '.tags[]' <<< "${META_JSON}")
+          if [ "${#tags[@]}" -eq 0 ]; then
+            echo "no tags to publish" >&2
+            exit 1
+          fi
+          tag_args=()
+          for tag in "${tags[@]}"; do tag_args+=(-t "${tag}"); done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+          digest="$(docker buildx imagetools inspect "${tags[0]}" --format '{{json .Manifest}}' | jq -r '.digest')"
+          test -n "${digest}"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Sign the published Docker image
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
+        run: echo "${TAGS}" | xargs -I {} cosign sign --yes "{}@${DIGEST}"
+
+  stage3-merge-all:
+    if: github.event_name != 'pull_request'
+    needs: [stage3-build, stage3-build-extra]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      STAGE3_PLATFORMS: linux/amd64 linux/arm64 linux/386 linux/arm/v6 linux/arm/v7 linux/ppc64le linux/riscv64 linux/s390x
+      STAGE3_SUFFIX: -stage3-all
+
+    steps: *stage3-merge-steps
