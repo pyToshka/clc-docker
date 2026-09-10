@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1
+
+ARG STAGE3_TAG=latest
+FROM gentoo/stage3:${STAGE3_TAG}
+
+ARG JOBS=4
+ARG EMERGE_JOBS=2
+ARG CALCULATE_OVERLAY=calculate
+ARG PYTHON_TARGET=python3_13
+
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+RUN <<EOF
+mkdir -p /etc/portage/package.use /etc/portage/package.accept_keywords /etc/portage/package.mask
+cat >> /etc/portage/make.conf <<CONF
+MAKEOPTS="-j${JOBS}"
+EMERGE_DEFAULT_OPTS="--jobs=${EMERGE_JOBS} --load-average=${JOBS} --quiet-build=y"
+FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -usersandbox"
+ACCEPT_LICENSE="*"
+USE="-doc -X -gtk -qt5 -qt6"
+CONF
+echo "*/*::${CALCULATE_OVERLAY} **" > /etc/portage/package.accept_keywords/calculate
+echo "=sys-apps/calculate-utils-9999" > /etc/portage/package.mask/calculate
+echo "sys-apps/calculate-utils -install -pxe -desktop -client" > /etc/portage/package.use/calculate
+EOF
+
+RUN --mount=type=cache,target=/var/cache/distfiles,sharing=locked <<EOF
+emerge-webrsync
+echo "PYTHON_TARGETS=\"$(portageq envvar PYTHON_SINGLE_TARGET) ${PYTHON_TARGET}\"" >> /etc/portage/make.conf
+emerge --quiet app-eselect/eselect-repository dev-vcs/git
+eselect repository enable "${CALCULATE_OVERLAY}"
+emerge --sync "${CALCULATE_OVERLAY}"
+emerge --quiet sys-apps/calculate-utils
+rm -rf /var/tmp/portage/* /var/cache/binpkgs/* /var/db/repos/*/.git /root/.cache
+EOF
+
+ENV LANG=C.UTF-8 \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+WORKDIR /root
+
+LABEL org.opencontainers.image.title="Calculate Linux tooling on Gentoo stage3" \
+      org.opencontainers.image.source="https://github.com/pyToshka/clc-docker" \
+      org.opencontainers.image.licenses="MIT"
+
+CMD ["/bin/bash"]
