@@ -1,8 +1,8 @@
 name: Docker
 
 on:
-  schedule:
-    - cron: '39 1 * * *'
+#  schedule:
+#    - cron: '39 1 * * *'
   push:
     branches: [ "main" ]
     tags: [ 'v*.*.*' ]
@@ -14,20 +14,39 @@ env:
   REGISTRY: ghcr.io
   # github.repository as <account>/<repo>
   IMAGE_NAME: ${{ github.repository }}
+  # zstd layers need Docker Engine 23.0+ on the pulling side
+  LAYER_COMPRESSION: compression=zstd,compression-level=19,force-compression=true,oci-mediatypes=true
 
 
 jobs:
   build:
-
+    name: ${{ matrix.dockerfile }} (linux/amd64)
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
       id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dockerfile: Dockerfile
+            suffix: -rootfs
+          - dockerfile: Dockerfile.scratch
+            suffix: -scratch
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      - name: Resolve Calculate rootfs path
+        id: clc
+        if: matrix.dockerfile == 'Dockerfile.scratch'
+        run: |
+          image="$(curl -fsSL https://mirror.calculate-linux.org/meta/1.0/index-system \
+            | awk -F';' '$1=="scratch" && $3=="x86_64" {p=$6} END{print p}')"
+          test -n "${image}"
+          echo "Using: ${image}"
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
       - name: Install cosign
         if: github.event_name != 'pull_request'
         uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 #v3.5.0
@@ -54,23 +73,28 @@ jobs:
             type=ref,event=tag
             type=ref,event=pr
             type=raw,value=latest,enable={{is_default_branch}}
+          flavor: |
+            suffix=${{ matrix.suffix }},onlatest=true
       - name: Build and push Docker image
         id: build-and-push
         uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          build-args: ${{ steps.clc.outputs.image && format('CLC_IMAGE={0}', steps.clc.outputs.image) || '' }}
+          outputs: type=image,push=${{ github.event_name != 'pull_request' }},${{ env.LAYER_COMPRESSION }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.dockerfile }}
+          cache-to: type=gha,scope=${{ matrix.dockerfile }},mode=max
 
       - name: Sign the published Docker image
         if: ${{ github.event_name != 'pull_request' }}
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
-        run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+        run: echo "${TAGS}" | xargs -I {} cosign sign --yes "{}@${DIGEST}"
 
   stage3-build:
     name: stage3 (${{ matrix.platform }})
@@ -121,8 +145,6 @@ jobs:
             type=ref,event=tag
             type=ref,event=pr
             type=raw,value=latest,enable={{is_default_branch}}
-          flavor: |
-            suffix=-stage3,onlatest=true
 
       - name: Build and push by digest
         id: build
@@ -132,7 +154,7 @@ jobs:
           file: Dockerfile.stage3
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ env.STAGE3_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          outputs: type=image,name=${{ env.STAGE3_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }},${{ env.LAYER_COMPRESSION }}
           cache-from: type=gha,scope=stage3-${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,scope=stage3-${{ env.PLATFORM_PAIR }},mode=max,ignore-error=true
 
@@ -201,8 +223,6 @@ jobs:
             type=ref,event=tag
             type=ref,event=pr
             type=raw,value=latest,enable={{is_default_branch}}
-          flavor: |
-            suffix=-stage3,onlatest=true
 
       - name: Create manifest list and push
         id: manifest

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ARG STAGE3_TAG=latest
-FROM gentoo/stage3:${STAGE3_TAG}
+FROM gentoo/stage3:${STAGE3_TAG} AS build
 
 ARG JOBS=4
 ARG EMERGE_JOBS=2
@@ -18,6 +18,7 @@ EMERGE_DEFAULT_OPTS="--jobs=${EMERGE_JOBS} --load-average=${JOBS} --quiet-build=
 FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -usersandbox"
 ACCEPT_LICENSE="*"
 USE="-doc -X -gtk -qt5 -qt6"
+INSTALL_MASK="\${INSTALL_MASK} /usr/share/doc /usr/share/gtk-doc /usr/share/info /usr/share/man /usr/share/locale -/usr/share/locale/en* -/usr/share/locale/ru -/usr/share/locale/locale.alias"
 CONF
 echo "*/*::${CALCULATE_OVERLAY} **" > /etc/portage/package.accept_keywords/calculate
 echo "=sys-apps/calculate-utils-9999" > /etc/portage/package.mask/calculate
@@ -26,14 +27,34 @@ echo "dev-lang/rust-bin CPU_FLAGS_X86: sse2" > /etc/portage/package.use/rust-bin
 EOF
 
 RUN --mount=type=cache,target=/var/cache/distfiles,sharing=locked <<EOF
+mkdir -p /etc/portage/sets
+python3 -c 'import portage; print("\n".join(portage.db[portage.root]["vartree"].dbapi.cp_all()))' \
+  > /etc/portage/sets/docker-stage3-base
+test -s /etc/portage/sets/docker-stage3-base
 emerge-webrsync
 echo "PYTHON_TARGETS=\"$(portageq envvar PYTHON_SINGLE_TARGET) ${PYTHON_TARGET}\"" >> /etc/portage/make.conf
 emerge --quiet app-eselect/eselect-repository dev-vcs/git
 eselect repository enable "${CALCULATE_OVERLAY}"
 emerge --sync "${CALCULATE_OVERLAY}"
 emerge --quiet sys-apps/calculate-utils
-rm -rf /var/tmp/portage/* /var/cache/binpkgs/* /var/db/repos/*/.git /root/.cache
+touch /var/lib/portage/world_sets
+cp /var/lib/portage/world_sets /tmp/world_sets.orig
+echo "@docker-stage3-base" >> /var/lib/portage/world_sets
+emerge --quiet --depclean --with-bdeps=n
+cp /tmp/world_sets.orig /var/lib/portage/world_sets
+rm /tmp/world_sets.orig /etc/portage/sets/docker-stage3-base
 EOF
+
+RUN <<EOF
+find /var/db/repos/gentoo -mindepth 1 -maxdepth 1 ! -name profiles ! -name eclass ! -name metadata -exec rm -rf {} +
+find /var/db/repos/gentoo/metadata -mindepth 1 -maxdepth 1 ! -name layout.conf -exec rm -rf {} +
+rm -rf /usr/share/doc/* /usr/share/gtk-doc/* /usr/share/info/* /usr/share/man/*
+find /usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name ru ! -name en ! -name 'en[@_]*' -exec rm -rf {} +
+rm -rf /var/tmp/portage/* /var/cache/binpkgs/* /root/.cache
+EOF
+
+FROM scratch
+COPY --from=build / /
 
 ENV LANG=C.UTF-8 \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
