@@ -82,7 +82,7 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
 
-    steps: &stage3-build-steps
+    steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -92,12 +92,6 @@ jobs:
         run: |
           echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "${GITHUB_ENV}"
           echo "STAGE3_IMAGE=${REGISTRY}/${IMAGE_NAME,,}" >> "${GITHUB_ENV}"
-
-      - name: Set up QEMU
-        if: ${{ matrix.qemu }}
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
-        with:
-          platforms: ${{ matrix.qemu }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -126,8 +120,6 @@ jobs:
           context: .
           file: Dockerfile.stage3
           platforms: ${{ matrix.platform }}
-          build-args: |
-            STAGE3_TAG=${{ matrix.stage3-tag || 'latest' }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.STAGE3_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=stage3-${{ env.PLATFORM_PAIR }}
@@ -151,38 +143,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  stage3-build-extra:
-    name: stage3 (${{ matrix.platform }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 360
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux/386
-            runner: ubuntu-24.04
-          - platform: linux/arm/v6
-            runner: ubuntu-24.04
-            qemu: arm
-          - platform: linux/arm/v7
-            runner: ubuntu-24.04
-            qemu: arm
-          - platform: linux/ppc64le
-            runner: ubuntu-24.04
-            qemu: ppc64le
-          - platform: linux/riscv64
-            runner: ubuntu-24.04
-            qemu: riscv64
-          - platform: linux/s390x
-            runner: ubuntu-24.04
-            qemu: s390x
-            stage3-tag: s390x-openrc
-
-    steps: *stage3-build-steps
-
   stage3-merge:
     if: github.event_name != 'pull_request'
     needs: stage3-build
@@ -193,9 +153,8 @@ jobs:
       id-token: write
     env:
       STAGE3_PLATFORMS: linux/amd64 linux/arm64
-      STAGE3_SUFFIX: -stage3
 
-    steps: &stage3-merge-steps
+    steps:
       - name: Prepare
         run: echo "STAGE3_IMAGE=${REGISTRY}/${IMAGE_NAME,,}" >> "${GITHUB_ENV}"
 
@@ -226,7 +185,7 @@ jobs:
         with:
           images: ${{ env.STAGE3_IMAGE }}
           flavor: |
-            suffix=${{ env.STAGE3_SUFFIX }}
+            suffix=-stage3
             onlatest=true
 
       - name: Create manifest list and push
@@ -261,17 +220,3 @@ jobs:
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.manifest.outputs.digest }}
         run: echo "${TAGS}" | xargs -I {} cosign sign --yes "{}@${DIGEST}"
-
-  stage3-merge-all:
-    if: github.event_name != 'pull_request'
-    needs: [stage3-build, stage3-build-extra]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-    env:
-      STAGE3_PLATFORMS: linux/amd64 linux/arm64 linux/386 linux/arm/v6 linux/arm/v7 linux/ppc64le linux/riscv64 linux/s390x
-      STAGE3_SUFFIX: -stage3-all
-
-    steps: *stage3-merge-steps
