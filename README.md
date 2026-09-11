@@ -113,17 +113,14 @@ In this image `cl-update` has no binhost to pull from, so it behaves as a wrappe
 
 `.github/workflows/docker-publish.yml` runs on every push to `main`, on `v*.*.*` tags, nightly at 01:39 UTC and on pull requests. Pull requests only build, nothing is pushed. Everything lands in `ghcr.io/pytoshka/clc-docker` under the tags `docker/metadata-action` derives from the event (`main`, `nightly`, the git tag), with a suffix per image; the table uses `main` as the example:
 
-| Tag               | Dockerfile          | Platforms                  | Published when                  |
-|-------------------|---------------------|----------------------------|---------------------------------|
-| `main`            | `Dockerfile`        | x86_64                     | the build succeeds              |
-| `main-stage3`     | `Dockerfile.stage3` | amd64, arm64               | both native builds succeed      |
-| `main-stage3-all` | `Dockerfile.stage3` | all eight platforms above  | all eight builds succeed        |
+| Tag           | Dockerfile          | Platforms    | Published when             |
+|---------------|---------------------|--------------|----------------------------|
+| `main`        | `Dockerfile`        | x86_64       | the build succeeds         |
+| `main-stage3` | `Dockerfile.stage3` | amd64, arm64 | both native builds succeed |
 
-amd64 and arm64 are the primary targets, so their tag never waits for the rest. `stage3-build` builds them natively, amd64 on `ubuntu-24.04` and arm64 on `ubuntu-24.04-arm`, and `stage3-merge` publishes `-stage3` as soon as both are done, usually hours before the emulated builds finish. The other six platforms build in `stage3-build-extra`: 386 natively on `ubuntu-24.04`, the remaining five on `ubuntu-24.04` under QEMU. `stage3-merge-all` then combines the same amd64 and arm64 images with those six into `-stage3-all`.
+CI builds `Dockerfile.stage3` only for amd64 and arm64, both natively and without QEMU: `stage3-build` runs amd64 on `ubuntu-24.04` and arm64 on `ubuntu-24.04-arm`. The other platforms listed above build locally but are not published.
 
-A build job pushes its image by digest only, without a tag. The merge jobs assemble the manifest list, tag it and sign it with cosign, the same way the x86_64 image is signed. Each merge job picks digests by an explicit platform list and stops if one of them is missing, so a tag never changes its set of platforms from one run to the next: a list with a platform missing is not published at all. Layer cache goes to the GitHub Actions cache with a separate scope per platform, otherwise the jobs would overwrite each other's cache.
-
-The weak spot is `-stage3-all`. A job on a GitHub-hosted runner is cut off after 6 hours, and under QEMU the whole dependency tree compiles from source: 63 to 89 packages depending on the platform, the heaviest being `dev-lang/python` and two Rust builds, `dev-python/cryptography` and `dev-util/maturin`. Whether the emulated jobs fit into that limit is settled by the first CI run, not by this README. If one of them does not, the run turns red and `-stage3-all` keeps its previous version, while `-stage3` is published regardless.
+A build job pushes its image by digest only, without a tag. `stage3-merge` assembles the manifest list, tags it and signs it with cosign, the same way the x86_64 image is signed. It picks digests by an explicit platform list and stops if one of them is missing, so `-stage3` is never published with one architecture only. Layer cache goes to the GitHub Actions cache with a separate scope per platform, otherwise the two jobs would overwrite each other's cache.
 
 ## Run
 
