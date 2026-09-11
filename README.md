@@ -111,12 +111,19 @@ In this image `cl-update` has no binhost to pull from, so it behaves as a wrappe
 
 ## Images built by CI
 
-`.github/workflows/docker-publish.yml` runs on every push to `main`, on `v*.*.*` tags, nightly at 01:39 UTC and on pull requests. Pull requests only build, nothing is pushed. Everything lands in `ghcr.io/pytoshka/clc-docker` under the tags `docker/metadata-action` derives from the event (`main`, `nightly`, the git tag), with a suffix per image; the table uses `main` as the example:
+`.github/workflows/docker-publish.yml` runs on every push to `main`, on `v*.*.*` tags, nightly at 01:39 UTC and on pull requests. Pull requests only build, nothing is pushed. Everything lands in `ghcr.io/pytoshka/clc-docker` under the tags `docker/metadata-action` derives from the event (`main`, `nightly`, the git tag) plus `latest`, with a suffix per image:
 
-| Tag           | Dockerfile          | Platforms    | Published when             |
-|---------------|---------------------|--------------|----------------------------|
-| `main`        | `Dockerfile`        | x86_64       | the build succeeds         |
-| `main-stage3` | `Dockerfile.stage3` | amd64, arm64 | both native builds succeed |
+| Tag                                          | Dockerfile          | Platforms    | Published when             |
+|----------------------------------------------|---------------------|--------------|----------------------------|
+| `latest`, `main`, `nightly`, `vX.Y.Z`        | `Dockerfile`        | x86_64       | the build succeeds         |
+| `latest-stage3`, `main-stage3`, `nightly-stage3`, `vX.Y.Z-stage3` | `Dockerfile.stage3` | amd64, arm64 | both native builds succeed |
+
+`latest` follows the default branch: every push to `main` and every nightly run moves it. A `v*.*.*` tag moves it too, so tagging an older commit points `latest` back at that commit until the next push or nightly run. Without `latest`, `docker pull ghcr.io/pytoshka/clc-docker` asks for `:latest` and gets `not found`. The stage3 image carries its own `latest-stage3`, because both jobs push to the same repository and a shared `latest` would be overwritten by whichever job finishes last:
+
+```bash
+docker pull ghcr.io/pytoshka/clc-docker            # x86_64 rootfs image
+docker pull ghcr.io/pytoshka/clc-docker:latest-stage3  # amd64 or arm64, picked by the host
+```
 
 CI builds `Dockerfile.stage3` only for amd64 and arm64, both natively and without QEMU: `stage3-build` runs amd64 on `ubuntu-24.04` and arm64 on `ubuntu-24.04-arm`. The other platforms listed above build locally but are not published.
 
