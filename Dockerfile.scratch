@@ -1,10 +1,23 @@
 # syntax=docker/dockerfile:1
 
-FROM scratch
+FROM scratch AS rootfs
 ARG CLC_MIRROR=https://mirror.calculate-linux.org
-ARG CLC_IMAGE=container/scratch-20260908-x86_64
+ARG CLC_IMAGE=container/scratch-20260910-x86_64
 
 ADD --unpack=true --chown=0:0 ${CLC_MIRROR}/${CLC_IMAGE}/rootfs.tar.xz /
+
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+RUN <<EOF
+rm -rf /usr/share/doc/* /usr/share/gtk-doc/* /usr/share/info/* /usr/share/man/* /var/cache/eix/*
+find /usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name ru ! -name en ! -name 'en[@_]*' -exec rm -rf {} +
+test -d /etc/portage/make.conf
+echo 'INSTALL_MASK="${INSTALL_MASK} /usr/share/doc /usr/share/gtk-doc /usr/share/info /usr/share/man /usr/share/locale -/usr/share/locale/en* -/usr/share/locale/ru -/usr/share/locale/locale.alias"' \
+  > /etc/portage/make.conf/docker
+EOF
+
+FROM scratch
+COPY --from=rootfs / /
 
 ENV LANG=C.UTF-8 \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
